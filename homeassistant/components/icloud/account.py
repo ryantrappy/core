@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from datetime import timedelta
+from http import HTTPStatus
 import logging
 import operator
 from typing import TYPE_CHECKING, Any
@@ -78,6 +79,7 @@ _LOGGER = logging.getLogger(__name__)
 # failure, and those have to keep being retried rather than parked for the user.
 _AUTH_REQUIRED_STATUSES = frozenset(
     {
+        HTTPStatus.UNAUTHORIZED,
         AppleAuthError.TWO_FACTOR_REQUIRED,
         AppleAuthError.LOGIN_TOKEN_EXPIRED,
         AppleAuthError.FIND_MY_REAUTH_REQUIRED,
@@ -158,7 +160,7 @@ class IcloudAccount:
             self._setup()
         except PyiCloudAPIResponseException as err:
             if not is_auth_error(err):
-                raise
+                raise ConfigEntryNotReady from err
             self._ask_to_authenticate(err)
         except (
             PyiCloud2FARequiredException,

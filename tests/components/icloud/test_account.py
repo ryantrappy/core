@@ -9,6 +9,7 @@ from pyicloud.exceptions import (
     PyiCloud2FARequiredException,
     PyiCloudAcceptTermsException,
     PyiCloudAPIResponseException,
+    PyiCloudAuthRequiredException,
     PyiCloudConnectionException,
     PyiCloudFailedLoginException,
 )
@@ -964,10 +965,19 @@ async def test_rejected_session_on_device_refresh_asks_the_user(
     assert config_entry.runtime_data.api is None
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param(401, id="unauthorized"),
+        pytest.param(409, id="two_factor_required"),
+        pytest.param(421, id="login_token_expired"),
+        pytest.param(450, id="find_my_reauth_required"),
+    ],
+)
 async def test_auth_status_on_first_device_refresh_asks_the_user(
     hass: HomeAssistant,
     polling_service: tuple[MagicMock, dict],
-    freezer: FrozenDateTimeFactory,
+    status: int,
 ) -> None:
     """Test that an authentication status on the first fetch reaches the user.
 
@@ -978,7 +988,7 @@ async def test_auth_status_on_first_device_refresh_asks_the_user(
     service, _ = polling_service
     type(service).devices = PropertyMock(
         side_effect=PyiCloudAPIResponseException(
-            "Authentication required for Account.", AppleAuthError.LOGIN_TOKEN_EXPIRED
+            "Authentication required for Account.", status
         )
     )
 
@@ -999,9 +1009,24 @@ async def test_auth_status_on_first_device_refresh_asks_the_user(
     assert config_entry.runtime_data.api is None
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PyiCloudFailedLoginException("rejected"), id="failed_login"),
+        pytest.param(
+            PyiCloudAuthRequiredException(USERNAME, Mock(spec=Response)),
+            id="auth_required",
+        ),
+        pytest.param(
+            PyiCloud2FARequiredException(USERNAME, Mock(spec=Response)),
+            id="two_factor_required",
+        ),
+    ],
+)
 async def test_rejected_session_on_first_device_refresh_asks_the_user(
     hass: HomeAssistant,
     polling_service: tuple[MagicMock, dict],
+    error: Exception,
 ) -> None:
     """Test that a session rejected on the first fetch reaches the user.
 
@@ -1010,9 +1035,7 @@ async def test_rejected_session_on_first_device_refresh_asks_the_user(
     leave a dead entry.
     """
     service, _ = polling_service
-    type(service).devices = PropertyMock(
-        side_effect=PyiCloudFailedLoginException("rejected")
-    )
+    type(service).devices = PropertyMock(side_effect=error)
 
     config_entry = MockConfigEntry(
         domain=DOMAIN, data=MOCK_CONFIG, entry_id="test", unique_id=USERNAME
@@ -1031,9 +1054,17 @@ async def test_rejected_session_on_first_device_refresh_asks_the_user(
     assert config_entry.runtime_data.api is None
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param(500, id="internal_server_error"),
+        pytest.param(503, id="service_unavailable"),
+    ],
+)
 async def test_other_api_error_on_first_device_refresh_is_not_a_rejection(
     hass: HomeAssistant,
     polling_service: tuple[MagicMock, dict],
+    status: int,
 ) -> None:
     """Test that an error that is not about authentication does not ask for a login.
 
@@ -1043,7 +1074,7 @@ async def test_other_api_error_on_first_device_refresh_is_not_a_rejection(
     """
     service, _ = polling_service
     type(service).devices = PropertyMock(
-        side_effect=PyiCloudAPIResponseException("Service unavailable", 503)
+        side_effect=PyiCloudAPIResponseException("Service unavailable", status)
     )
 
     config_entry = MockConfigEntry(
@@ -1054,7 +1085,7 @@ async def test_other_api_error_on_first_device_refresh_is_not_a_rejection(
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert config_entry.state is not ConfigEntryState.LOADED
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
     assert not [
         flow
         for flow in hass.config_entries.flow.async_progress()
